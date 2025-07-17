@@ -7,7 +7,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB';
   site = 'https://wtr-lab.com/';
-  version = '1.0.2';
+  version = '1.0.1';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   
@@ -19,10 +19,39 @@ class WTRLAB implements Plugin.PluginBase {
     }: Plugin.PopularNovelsOptions<typeof this.filters>,
   ): Promise<Plugin.NovelItem[]> {
     let link = this.site + this.sourceLang + 'novel-list?';
-    link += `orderBy=${filters.order.value}`;
-    link += `&order=${filters.sort.value}`;
-    link += `&filter=${filters.storyStatus.value}`;
-    link += `&page=${page}`;
+    
+    const params = new URLSearchParams();
+    params.append('orderBy', filters.orderBy.value);
+    params.append('order', filters.order.value);
+    params.append('status', filters.status.value);
+    params.append('release_status', filters.release_status.value);
+    params.append('addition_age', filters.addition_age.value);
+    params.append('page', page.toString());
+    
+    if (filters.genres.value?.include && filters.genres.value.include.length > 0) {
+      params.append('genres_include', filters.genres.value.include.join(','));
+      params.append('genre_operator', filters.genre_operator.value);
+    }
+    if (filters.genres.value?.exclude && filters.genres.value.exclude.length > 0) {
+      params.append('genres_exclude', filters.genres.value.exclude.join(','));
+    }
+    
+    if (filters.tags.value?.include && filters.tags.value.include.length > 0) {
+      params.append('tags_include', filters.tags.value.include.join(','));
+      params.append('tag_operator', filters.tag_operator.value);
+    }
+    if (filters.tags.value?.exclude && filters.tags.value.exclude.length > 0) {
+      params.append('tags_exclude', filters.tags.value.exclude.join(','));
+    }
+    
+    if (filters.folders.value) {
+      params.append('folders', filters.folders.value);
+    }
+    if (filters.library_exclude.value) {
+      params.append('library_exclude', filters.library_exclude.value);
+    }
+    
+    link += params.toString();
 
     if (showLatestNovels) {
       const response = await fetchApi(this.site + 'api/home/recent', {
@@ -314,25 +343,29 @@ class WTRLAB implements Plugin.PluginBase {
     }
   }
 
-  async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
-    const response = await fetchApi(this.site + 'api/search', {
-      headers: {
-        'Content-Type': 'application/json',
-        Referer: this.site + this.sourceLang,
-        Origin: this.site,
-      },
-      method: 'POST',
-      body: JSON.stringify({ text: searchTerm }),
-    });
-
-    const recentNovel: JsonNovel = await response.json();
-
-    const novels: Plugin.NovelItem[] = recentNovel.data.map((datum: Datum) => ({
-      name: datum.data.title || '',
-      cover: datum.data.image,
-      path: this.sourceLang + 'serie-' + datum.raw_id + '/' + datum.slug || '',
-    }));
-
+  async searchNovels(
+    searchTerm: string,
+    page: number,
+  ): Promise<Plugin.NovelItem[]> {
+    const link = `${this.site}${this.sourceLang}novel-list?search=${encodeURIComponent(searchTerm)}&page=${page}`;
+    
+    const body = await fetchApi(link).then(res => res.text());
+    const loadedCheerio = parseHTML(body);
+    
+    const novels: Plugin.NovelItem[] = loadedCheerio('.serie-item')
+      .map((index, element) => ({
+        name:
+          loadedCheerio(element)
+            .find('.title-wrap > a')
+            .text()
+            .replace(loadedCheerio(element).find('.rawtitle').text(), '') ||
+          '',
+        cover: loadedCheerio(element).find('img').attr('src'),
+        path: loadedCheerio(element).find('a').attr('href') || '',
+      }))
+      .get()
+      .filter(novel => novel.name && novel.path);
+      
     return novels;
   }
 
@@ -440,34 +473,200 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   filters = {
-    order: {
-      value: 'chapter',
+    orderBy: {
+      value: 'update',
       label: 'Order by',
       options: [
-        { label: 'View', value: 'view' },
-        { label: 'Name', value: 'name' },
+        { label: 'Update Date', value: 'update' },
         { label: 'Addition Date', value: 'date' },
+        { label: 'Random', value: 'random' },
+        { label: 'Weekly View', value: 'weekly_rank' },
+        { label: 'Monthly View', value: 'monthly_rank' },
+        { label: 'All-Time View', value: 'view' },
+        { label: 'Name', value: 'name' },
         { label: 'Reader', value: 'reader' },
         { label: 'Chapter', value: 'chapter' },
+        { label: 'Rating', value: 'rating' },
+        { label: 'Review Count', value: 'total_rate' },
+        { label: 'Vote Count', value: 'vote' },
       ],
       type: FilterTypes.Picker,
     },
-    sort: {
+    order: {
       value: 'desc',
-      label: 'Sort by',
+      label: 'Order',
       options: [
         { label: 'Descending', value: 'desc' },
         { label: 'Ascending', value: 'asc' },
       ],
       type: FilterTypes.Picker,
     },
-    storyStatus: {
+    status: {
       value: 'all',
       label: 'Status',
       options: [
         { label: 'All', value: 'all' },
         { label: 'Ongoing', value: 'ongoing' },
         { label: 'Completed', value: 'completed' },
+        { label: 'Hiatus', value: 'hiatus' },
+        { label: 'Dropped', value: 'dropped' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    release_status: {
+      value: 'all',
+      label: 'Release Status',
+      options: [
+        { label: 'All', value: 'all' },
+        { label: 'Released', value: 'released' },
+        { label: 'On Voting', value: 'voting' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    addition_age: {
+      value: 'all',
+      label: 'Addition Age',
+      options: [
+        { label: 'All', value: 'all' },
+        { label: '< 2 Days', value: 'day' },
+        { label: '< 1 Week', value: 'week' },
+        { label: '< 1 Month', value: 'month' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    genre_operator: {
+      value: 'and',
+      label: 'Genre (And/Or)',
+      options: [
+        { label: 'And', value: 'and' },
+        { label: 'Or', value: 'or' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    genres: {
+      label: 'Genres',
+      type: FilterTypes.ExcludableCheckboxGroup,
+      value: {
+        include: [],
+        exclude: [],
+      },
+      options: [
+        { label: 'Action', value: '1' },
+        { label: 'Adult', value: '2' },
+        { label: 'Adventure', value: '3' },
+        { label: 'Comedy', value: '4' },
+        { label: 'Drama', value: '5' },
+        { label: 'Ecchi', value: '6' },
+        { label: 'Erciyuan', value: '7' },
+        { label: 'Fan-fiction', value: '8' },
+        { label: 'Fantasy', value: '9' },
+        { label: 'Game', value: '10' },
+        { label: 'Gender Bender', value: '11' },
+        { label: 'Harem', value: '12' },
+        { label: 'Historical', value: '13' },
+        { label: 'Horror', value: '14' },
+        { label: 'Josei', value: '15' },
+        { label: 'Martial Arts', value: '16' },
+        { label: 'Mature', value: '17' },
+        { label: 'Mecha', value: '18' },
+        { label: 'Military', value: '19' },
+        { label: 'Mystery', value: '20' },
+        { label: 'Psychological', value: '21' },
+        { label: 'Romance', value: '22' },
+        { label: 'School Life', value: '23' },
+        { label: 'Sci-fi', value: '24' },
+        { label: 'Seinen', value: '25' },
+        { label: 'Shoujo', value: '26' },
+        { label: 'Shoujo Ai', value: '27' },
+        { label: 'Shounen', value: '28' },
+        { label: 'Shounen Ai', value: '29' },
+        { label: 'Slice of Life', value: '30' },
+        { label: 'Smut', value: '31' },
+        { label: 'Sports', value: '32' },
+        { label: 'Supernatural', value: '33' },
+        { label: 'Tragedy', value: '34' },
+        { label: 'Urban Life', value: '35' },
+        { label: 'Wuxia', value: '36' },
+        { label: 'Xianxia', value: '37' },
+        { label: 'Xuanhuan', value: '38' },
+        { label: 'Yaoi', value: '39' },
+        { label: 'Yuri', value: '40' },
+      ],
+    },
+    tag_operator: {
+      value: 'and',
+      label: 'Tag (And/Or)',
+      options: [
+        { label: 'And', value: 'and' },
+        { label: 'Or', value: 'or' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    tags: {
+      label: 'Tags',
+      type: FilterTypes.ExcludableCheckboxGroup,
+      value: {
+        include: [],
+        exclude: [],
+      },
+      options: [
+        { label: 'Accelerated Growth', value: '1' },
+        { label: 'Alchemy', value: '2' },
+        { label: 'Ancient Times', value: '3' },
+        { label: 'Antihero Protagonist', value: '4' },
+        { label: 'Beautiful Female Lead', value: '5' },
+        { label: 'Betrayal', value: '6' },
+        { label: 'Business Management', value: '7' },
+        { label: 'Calm Protagonist', value: '8' },
+        { label: 'Clever Protagonist', value: '9' },
+        { label: 'Cold Protagonist', value: '10' },
+        { label: 'Cultivation', value: '11' },
+        { label: 'Demons', value: '12' },
+        { label: 'Dragons', value: '13' },
+        { label: 'Early Romance', value: '14' },
+        { label: 'Evil Protagonist', value: '15' },
+        { label: 'Fast Cultivation', value: '16' },
+        { label: 'Gate to Another World', value: '17' },
+        { label: 'Gods', value: '18' },
+        { label: 'Handsome Male Lead', value: '19' },
+        { label: 'Hard-Working Protagonist', value: '20' },
+        { label: 'Immortals', value: '21' },
+        { label: 'Kingdom Building', value: '22' },
+        { label: 'Level System', value: '23' },
+        { label: 'Magic', value: '24' },
+        { label: 'Male Protagonist', value: '25' },
+        { label: 'Modern Day', value: '26' },
+        { label: 'Overpowered Protagonist', value: '27' },
+        { label: 'Reincarnation', value: '28' },
+        { label: 'Revenge', value: '29' },
+        { label: 'Second Chance', value: '30' },
+        { label: 'Strong Love Interests', value: '31' },
+        { label: 'System', value: '32' },
+        { label: 'Time Travel', value: '33' },
+        { label: 'Transmigration', value: '34' },
+        { label: 'Weak to Strong', value: '35' },
+      ],
+    },
+    folders: {
+      value: '',
+      label: 'Library Folders',
+      options: [
+        { label: 'No Filter', value: '' },
+        { label: 'Reading', value: '1' },
+        { label: 'Read Later', value: '2' },
+        { label: 'Completed', value: '3' },
+        { label: 'Trash', value: '5' },
+      ],
+      type: FilterTypes.Picker,
+    },
+    library_exclude: {
+      value: '',
+      label: 'Library Exclude',
+      options: [
+        { label: 'None', value: '' },
+        { label: 'Exclude All', value: 'history' },
+        { label: 'Exclude Trash', value: 'trash' },
+        { label: 'Exclude Library & Trash', value: 'in_library' },
       ],
       type: FilterTypes.Picker,
     },
