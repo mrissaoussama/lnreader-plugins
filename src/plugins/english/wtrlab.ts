@@ -7,7 +7,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB';
   site = 'https://wtr-lab.com/';
-  version = '1.0.1';
+  version = '1.0.3';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   
@@ -28,30 +28,42 @@ class WTRLAB implements Plugin.PluginBase {
     params.append('addition_age', filters.addition_age.value);
     params.append('page', page.toString());
     
+    if (filters.search.value) {
+      params.append('text', filters.search.value);
+    }
+
     if (filters.genres.value?.include && filters.genres.value.include.length > 0) {
-      params.append('genres_include', filters.genres.value.include.join(','));
-      params.append('genre_operator', filters.genre_operator.value);
+      params.append('gi', filters.genres.value.include.join(','));
+      params.append('gc', filters.genre_operator.value);
     }
     if (filters.genres.value?.exclude && filters.genres.value.exclude.length > 0) {
-      params.append('genres_exclude', filters.genres.value.exclude.join(','));
+      params.append('ge', filters.genres.value.exclude.join(','));
     }
     
     if (filters.tags.value?.include && filters.tags.value.include.length > 0) {
-      params.append('tags_include', filters.tags.value.include.join(','));
-      params.append('tag_operator', filters.tag_operator.value);
+      params.append('ti', filters.tags.value.include.join(','));
+      params.append('tc', filters.tag_operator.value);
     }
     if (filters.tags.value?.exclude && filters.tags.value.exclude.length > 0) {
-      params.append('tags_exclude', filters.tags.value.exclude.join(','));
+      params.append('te', filters.tags.value.exclude.join(','));
     }
     
     if (filters.folders.value) {
       params.append('folders', filters.folders.value);
     }
     if (filters.library_exclude.value) {
-      params.append('library_exclude', filters.library_exclude.value);
+      params.append('le', filters.library_exclude.value);
     }
-    
-    link += params.toString();
+
+    if (filters.min_chapters.value) {
+      params.append('minc', filters.min_chapters.value);
+    }
+    if (filters.min_rating.value) {
+      params.append('minr', filters.min_rating.value);
+    }
+    if (filters.min_review_count.value) {
+      params.append('minrc', filters.min_review_count.value);
+    }
 
     if (showLatestNovels) {
       const response = await fetchApi(this.site + 'api/home/recent', {
@@ -79,21 +91,25 @@ class WTRLAB implements Plugin.PluginBase {
 
       return novels;
     } else {
-      const body = await fetchApi(link).then(res => res.text());
-      const loadedCheerio = parseHTML(body);
-      const novels: Plugin.NovelItem[] = loadedCheerio('.serie-item')
-        .map((index, element) => ({
-          name:
-            loadedCheerio(element)
-              .find('.title-wrap > a')
-              .text()
-              .replace(loadedCheerio(element).find('.rawtitle').text(), '') ||
-            '',
-          cover: loadedCheerio(element).find('img').attr('src'),
-          path: loadedCheerio(element).find('a').attr('href') || '',
-        }))
-        .get()
-        .filter(novel => novel.name && novel.path);
+      const finderPage = await fetchApi(this.site + 'en/novel-finder').then(res => res.text());
+      const finderCheerio = parseHTML(finderPage);
+      const nextData = finderCheerio('#__NEXT_DATA__').html();
+      if (!nextData) {
+        throw new Error('Could not find __NEXT_DATA__ on novel finder page');
+      }
+      const buildId = JSON.parse(nextData).buildId;
+      
+      link = `${this.site}_next/data/${buildId}/en/novel-finder.json?${params.toString()}`;
+
+      const response = await fetchApi(link);
+      const json = await response.json();
+      
+      const novels: Plugin.NovelItem[] = json.pageProps.series.map((novel: any) => ({
+        name: novel.data.title,
+        cover: novel.data.image,
+        path: `${this.sourceLang}serie-${novel.id}/${novel.slug}`,
+      }));
+
       return novels;
     }
   }
@@ -173,7 +189,7 @@ class WTRLAB implements Plugin.PluginBase {
       .toArray();
     
     if (genres.length > 0) {
-      novel.genres = genres.filter(genre => genre && genre.length > 0).join(', ');
+      novel.genres = genres.map(g => g.replace(/,$/, '').trim()).filter(genre => genre && genre.length > 0).join(', ');
     }
 
     const tags = loadedCheerio('td:contains("Tags")')
@@ -347,26 +363,9 @@ class WTRLAB implements Plugin.PluginBase {
     searchTerm: string,
     page: number,
   ): Promise<Plugin.NovelItem[]> {
-    const link = `${this.site}${this.sourceLang}novel-list?search=${encodeURIComponent(searchTerm)}&page=${page}`;
-    
-    const body = await fetchApi(link).then(res => res.text());
-    const loadedCheerio = parseHTML(body);
-    
-    const novels: Plugin.NovelItem[] = loadedCheerio('.serie-item')
-      .map((index, element) => ({
-        name:
-          loadedCheerio(element)
-            .find('.title-wrap > a')
-            .text()
-            .replace(loadedCheerio(element).find('.rawtitle').text(), '') ||
-          '',
-        cover: loadedCheerio(element).find('img').attr('src'),
-        path: loadedCheerio(element).find('a').attr('href') || '',
-      }))
-      .get()
-      .filter(novel => novel.name && novel.path);
-      
-    return novels;
+    const filters = this.filters;
+    filters.search.value = searchTerm;
+    return this.popularNovels(page, { showLatestNovels: false, filters });
   }
 
   async fetchAllChapters(rawId: number, totalChapters: number, slug: string): Promise<Plugin.ChapterItem[]> {
@@ -473,6 +472,11 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   filters = {
+    search: {
+      value: '',
+      label: 'Search',
+      type: FilterTypes.TextInput,
+    },
     orderBy: {
       value: 'update',
       label: 'Order by',
@@ -533,6 +537,21 @@ class WTRLAB implements Plugin.PluginBase {
         { label: '< 1 Month', value: 'month' },
       ],
       type: FilterTypes.Picker,
+    },
+    min_chapters: {
+      value: '',
+      label: 'Minimum Chapters',
+      type: FilterTypes.TextInput,
+    },
+    min_rating: {
+      value: '',
+      label: 'Minimum Rating (0.0-5.0)',
+      type: FilterTypes.TextInput,
+    },
+    min_review_count: {
+      value: '',
+      label: 'Minimum Review Count',
+      type: FilterTypes.TextInput,
     },
     genre_operator: {
       value: 'and',
