@@ -337,11 +337,26 @@ class WTRLAB implements Plugin.PluginBase {
           console.log('Successfully converted API body to HTML, initial length:', htmlString.length);
           
           try {
-            const glossaryData = await this.fetchGlossaryTerms(rawId);
-            htmlString = this.replaceGlossarySymbols(htmlString, glossaryData);
-            console.log('Successfully replaced glossary symbols, final length:', htmlString.length);
+            const glossaryTermsData = apiData.data?.data?.glossary_data?.terms;
+            if (glossaryTermsData && Array.isArray(glossaryTermsData)) {
+              const glossaryData: GlossaryTerm[] = glossaryTermsData.map((term: unknown[], index: number) => {
+                const englishTranslations = Array.isArray(term[0]) ? term[0] : [term[0]];
+                const chineseOriginal = (term[1] as string) || '';
+                
+                return {
+                  index: index,
+                  english: (englishTranslations[0] as string) || '',
+                  chinese: chineseOriginal,
+                  symbol: `※${index}⛬`
+                };
+              });
+              htmlString = this.replaceGlossarySymbols(htmlString, glossaryData);
+              console.log('Successfully replaced glossary symbols, final length:', htmlString.length);
+            } else {
+              console.warn('No glossary data found in chapter response.');
+            }
           } catch (error) {
-            console.warn('Failed to fetch or apply glossary terms:', error instanceof Error ? error.message : String(error));
+            console.warn('Failed to apply glossary terms:', error instanceof Error ? error.message : String(error));
           }
           
           return htmlString;
@@ -369,70 +384,42 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   async fetchAllChapters(rawId: number, totalChapters: number, slug: string): Promise<Plugin.ChapterItem[]> {
-    try {
-      const response = await fetchApi(
-        `${this.site}api/chapters/${rawId}?start=1&end=${totalChapters}`
-      );
+    const allChapters: Plugin.ChapterItem[] = [];
+    const batchSize = 250;
+    
+    for (let start = 1; start <= totalChapters; start += batchSize) {
+      const end = Math.min(start + batchSize - 1, totalChapters);
       
-      const data = await response.json();
-      
-      if (data.chapters && Array.isArray(data.chapters)) {
-        const chapters: Plugin.ChapterItem[] = data.chapters.map(
-          (apiChapter: ApiChapter) => ({
-            name: apiChapter.title,
-            path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
-            releaseTime: apiChapter.updated_at?.substring(0, 10),
-            chapterNumber: apiChapter.order,
-          })
+      try {
+        const response = await fetchApi(
+          `${this.site}api/chapters/${rawId}?start=${start}&end=${end}`
         );
-        return chapters.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
+        
+        const data = await response.json();
+        
+        if (data.chapters && Array.isArray(data.chapters)) {
+          const batchChapters: Plugin.ChapterItem[] = data.chapters.map(
+            (apiChapter: ApiChapter) => ({
+              name: apiChapter.title,
+              path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
+              releaseTime: apiChapter.updated_at?.substring(0, 10),
+              chapterNumber: apiChapter.order,
+            })
+          );
+          
+          allChapters.push(...batchChapters);
+        }
+        
+        if (!data.chapters || data.chapters.length < batchSize) {
+          break;
+        }
+      } catch (error) {
+        console.error(`Failed to fetch chapters ${start}-${end}:`, error);
+        continue;
       }
-    } catch (error) {
-      console.error(`Failed to fetch chapters:`, error);
     }
     
-    return [];
-  }
-
-  async fetchGlossaryTerms(rawId: number): Promise<GlossaryTerm[]> {
-    console.log(`Fetching glossary terms for rawId: ${rawId}`);
-    try {
-      const response = await fetchApi(`${this.site}api/reader/terms/${rawId}.json`);
-      
-      if (!response.ok) {
-        throw new Error(`Glossary API request failed with status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.success && data.glossaries && Array.isArray(data.glossaries) && data.glossaries.length > 0) {
-        const glossaryData = data.glossaries[0];
-        
-        if (glossaryData.data && glossaryData.data.terms && Array.isArray(glossaryData.data.terms)) {
-          console.log(`Found ${glossaryData.data.terms.length} glossary terms`);
-          
-          const terms: GlossaryTerm[] = glossaryData.data.terms.map((term: unknown[], index: number) => {
-            const englishTranslations = Array.isArray(term[0]) ? term[0] : [term[0]];
-            const chineseOriginal = term[1] || '';
-            
-            return {
-              index: index,
-              english: englishTranslations[0] || '',
-              chinese: chineseOriginal,
-              symbol: `※${index}⛬`
-            };
-          });
-          
-          return terms;
-        }
-      }
-      
-      console.log('No valid glossary terms found in response');
-      return [];
-    } catch (error) {
-      console.error('Error fetching glossary terms:', error instanceof Error ? error.message : String(error));
-      return [];
-    }
+    return allChapters.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
   }
 
   replaceGlossarySymbols(htmlContent: string, glossaryTerms: GlossaryTerm[]): string {
@@ -726,7 +713,6 @@ type Chapter = {
   created_at: string;
   updated_at: string;
 };
-
 type ApiChapter = {
   serie_id: number;
   id: number;
