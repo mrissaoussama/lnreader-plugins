@@ -369,42 +369,29 @@ class WTRLAB implements Plugin.PluginBase {
   }
 
   async fetchAllChapters(rawId: number, totalChapters: number, slug: string): Promise<Plugin.ChapterItem[]> {
-    const allChapters: Plugin.ChapterItem[] = [];
-    const batchSize = 250;
-    
-    for (let start = 1; start <= totalChapters; start += batchSize) {
-      const end = Math.min(start + batchSize - 1, totalChapters);
+    try {
+      const response = await fetchApi(
+        `${this.site}api/chapters/${rawId}?start=1&end=${totalChapters}`
+      );
       
-      try {
-        const response = await fetchApi(
-          `${this.site}api/chapters/${rawId}?start=${start}&end=${end}`
+      const data = await response.json();
+      
+      if (data.chapters && Array.isArray(data.chapters)) {
+        const chapters: Plugin.ChapterItem[] = data.chapters.map(
+          (apiChapter: ApiChapter) => ({
+            name: apiChapter.title,
+            path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
+            releaseTime: apiChapter.updated_at?.substring(0, 10),
+            chapterNumber: apiChapter.order,
+          })
         );
-        
-        const data = await response.json();
-        
-        if (data.chapters && Array.isArray(data.chapters)) {
-          const batchChapters: Plugin.ChapterItem[] = data.chapters.map(
-            (apiChapter: ApiChapter) => ({
-              name: apiChapter.title,
-              path: `${this.sourceLang}serie-${rawId}/${slug}/chapter-${apiChapter.order}`,
-              releaseTime: apiChapter.updated_at?.substring(0, 10),
-              chapterNumber: apiChapter.order,
-            })
-          );
-          
-          allChapters.push(...batchChapters);
-        }
-        
-        if (!data.chapters || data.chapters.length < batchSize) {
-          break;
-        }
-      } catch (error) {
-        console.error(`Failed to fetch chapters ${start}-${end}:`, error);
-        continue;
+        return chapters.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
       }
+    } catch (error) {
+      console.error(`Failed to fetch chapters:`, error);
     }
     
-    return allChapters.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0));
+    return [];
   }
 
   async fetchGlossaryTerms(rawId: number): Promise<GlossaryTerm[]> {
@@ -755,5 +742,7 @@ type GlossaryTerm = {
   chinese: string;
   symbol: string;
 };
+
+
 
 export default new WTRLAB();
