@@ -80,67 +80,101 @@ class FictionZonePlugin implements Plugin.PagePlugin {
     novel.summary = loadedCheerio('#synopsis > div.content').text();
 
     let nuxtData = loadedCheerio('script#__NUXT_DATA__').html();
+    if (!nuxtData) {
+      throw new Error('Could not find __NUXT_DATA__');
+    }
     let parsed = JSON.parse(nuxtData!);
-    let last = null;
+    let novelId: string | null = null;
     for (let a of parsed) {
       if (typeof a === 'string' && a.startsWith('novel_covers/')) break;
-      last = a;
+      if (typeof a === 'object' && a?.novel?.id) {
+        novelId = a.novel.id.toString();
+        break;
+      }
     }
-    this.cachedNovelIds.set(novelPath, last.toString());
-    // @ts-ignore
-    novel.chapters = loadedCheerio(
-      'div.chapters > div.list-wrapper > div.items > a.chapter',
-    )
-      .map((i, el) => {
-        const chapterName = loadedCheerio(el).find('span.chapter-title').text();
-        const chapterUrl = loadedCheerio(el)
-          .attr('href')
-          ?.replace(/^\//, '')
-          .replace(/\/$/, '');
-        const uploadTime = this.parseAgoDate(
-          loadedCheerio(el).find('span.update-date').text(),
-        );
 
-        return {
-          name: chapterName,
-          releaseTime: uploadTime,
-          path: chapterUrl?.replace(/^\//, '').replace(/\/$/, ''),
-        };
-      })
-      .toArray()
-      .filter(chap => !!chap.path);
-    novel.totalPages = parseInt(
-      loadedCheerio('div.chapters ul.el-pager > li:last-child').text(),
-    );
+    if (!novelId) {
+      throw new Error('Could not find novel ID');
+    }
+    this.cachedNovelIds.set(novelPath, novelId);
+
+    try {
+      novel.chapters = await this.fetchAllChapters(novelId, novelPath);
+    } catch (apiError) {
+      novel.chapters = loadedCheerio(
+        'div.chapters > div.list-wrapper > div.items > a.chapter',
+      )
+        .map((i, el) => {
+          const chapterName = loadedCheerio(el).find('span.chapter-title').text();
+          const chapterUrl = loadedCheerio(el)
+            .attr('href')
+            ?.replace(/^\//, '')
+            .replace(/\/$/, '');
+          const uploadTime = this.parseAgoDate(
+            loadedCheerio(el).find('span.update-date').text(),
+          );
+
+          if (!chapterUrl) return null;
+
+          return {
+            name: chapterName,
+            releaseTime: uploadTime,
+            path: chapterUrl,
+          };
+        })
+        .toArray()
+        .filter((chap): chap is Plugin.ChapterItem => chap !== null);
+    }
+    
+    const totalPagesText = loadedCheerio('div.chapters ul.el-pager > li:last-child').text();
+    novel.totalPages = totalPagesText ? parseInt(totalPagesText) : 1;
 
     return novel;
   }
 
-  async parsePage(novelPath: string, page: string): Promise<Plugin.SourcePage> {
-    let id = this.cachedNovelIds.get(novelPath);
-    if (!id) {
-      await this.parseNovel(novelPath);
-      id = this.cachedNovelIds.get(novelPath);
-    }
+  async fetchAllChapters(novelId: string, novelPath: string): Promise<Plugin.ChapterItem[]> {
+    let allChapters: Plugin.ChapterItem[] = [];
+    let currentPage = 1;
+    let lastPage = 1;
 
-    const data = await fetchApi(this.site + '/api/__api_party/api-v1', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        'path': '/chapter/all/' + id,
-        'query': { 'page': parseInt(page) },
-        'headers': { 'content-type': 'application/json' },
-        'method': 'get',
-      }),
-    }).then(r => r.json());
-    return {
-      chapters: data._data.map((c: any) => ({
+    do {
+      const response = await fetchApi(this.site + '/api/__api_party/api-v1', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          'path': `/chapter/all/${novelId}`,
+          'query': { 'page': currentPage },
+          'headers': { 'content-type': 'application/json' },
+          'method': 'get',
+        }),
+      });
+      const json = await response.json();
+
+      if (!json._success || !json._data) {
+        throw new Error(`API request failed for page ${currentPage}`);
+      }
+
+      const chapters = json._data.map((c: any) => ({
         name: c.title,
         releaseTime: new Date(c.created_at).toISOString(),
-        path: novelPath + '/' + c.slug,
-      })),
+        path: `${novelPath}/${c.slug}`,
+      }));
+      allChapters.push(...chapters);
+
+      if (json._extra?._pagination) {
+        lastPage = json._extra._pagination._last || 1;
+      }
+      currentPage++;
+    } while (currentPage <= lastPage);
+
+    return allChapters;
+  }
+
+  async parsePage(novelPath: string, page: string): Promise<Plugin.SourcePage> {
+    return {
+      chapters: [],
     };
   }
 
@@ -148,7 +182,16 @@ class FictionZonePlugin implements Plugin.PagePlugin {
     const req = await fetchApi(this.site + '/' + chapterPath);
     const body = await req.text();
     const loadedCheerio = loadCheerio(body);
-    return loadedCheerio('div.chapter-content').html() || '';
+    const content = loadedCheerio('div.chapter-content');
+    
+    content.find('p').each((i, el) => {
+      const p = loadedCheerio(el);
+      if (p.text().trim() === '' && p.children().length === 0) {
+        p.remove();
+      }
+    });
+
+    return content.html() || '';
   }
 
   async searchNovels(
