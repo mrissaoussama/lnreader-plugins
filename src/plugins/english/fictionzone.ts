@@ -5,12 +5,12 @@ import { load as loadCheerio } from 'cheerio';
 import { NovelStatus } from '@libs/novelStatus';
 import dayjs from 'dayjs';
 
-class FictionZonePlugin implements Plugin.PagePlugin {
+class FictionZonePlugin implements Plugin.PluginBase {
   id = 'fictionzone';
   name = 'Fiction Zone';
   icon = 'src/en/fictionzone/icon.png';
   site = 'https://fictionzone.net';
-  version = '1.0.1';
+  version = '1.0.2';
   filters: Filters | undefined = undefined;
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
@@ -73,11 +73,22 @@ class FictionZonePlugin implements Plugin.PagePlugin {
         .map((i, el) => loadedCheerio(el).text())
         .toArray(),
     ].join(',');
+    console.log(`[FictionZone] Genres: ${novel.genres}`);
+    
     const status = loadedCheerio('div.novel-status > div.content')
       .text()
       .trim();
     if (status === 'Ongoing') novel.status = NovelStatus.Ongoing;
-    novel.summary = loadedCheerio('#synopsis > div.content').text();
+    console.log(`[FictionZone] Status: ${status} -> ${novel.status}`);
+    
+    novel.summary = loadedCheerio('#synopsis > div.content').text() || 
+                    loadedCheerio('#synopsis').text() || 
+                    loadedCheerio('.synopsis').text() || 
+                    loadedCheerio('.novel-description').text() || 
+                    loadedCheerio('.description').text();
+    novel.summary = novel.summary?.trim();
+    console.log(`[FictionZone] Summary length: ${novel.summary?.length || 0} characters`);
+    console.log(`[FictionZone] Summary: ${novel.summary?.substring(0, 100)}${novel.summary && novel.summary.length > 100 ? '...' : ''}`);
 
     let nuxtData = loadedCheerio('script#__NUXT_DATA__').html();
     if (!nuxtData) {
@@ -123,21 +134,33 @@ class FictionZonePlugin implements Plugin.PagePlugin {
           };
         })
         .toArray()
-        .filter((chap): chap is Plugin.ChapterItem => chap !== null);
+        .filter((chap) => {
+          return chap !== null && chap.name && chap.path && chap.releaseTime !== undefined;
+        }) as Plugin.ChapterItem[];
+        
+      console.log(`[FictionZone] Scraped ${novel.chapters.length} chapters from HTML`);
     }
     
     const totalPagesText = loadedCheerio('div.chapters ul.el-pager > li:last-child').text();
     novel.totalPages = totalPagesText ? parseInt(totalPagesText) : 1;
+    console.log(`[FictionZone] Total pages: ${novel.totalPages}`);
 
+    console.log(`[FictionZone] ParseNovel completed successfully for: ${novelPath}`);
+    console.log(`[FictionZone] Final novel data - Name: ${novel.name}, Chapters: ${novel.chapters?.length || 0}, Author: ${novel.author}`);
+    
     return novel;
   }
 
   async fetchAllChapters(novelId: string, novelPath: string): Promise<Plugin.ChapterItem[]> {
+    console.log(`[FictionZone] Starting fetchAllChapters for novel ID: ${novelId}`);
+    
     let allChapters: Plugin.ChapterItem[] = [];
     let currentPage = 1;
     let lastPage = 1;
 
     do {
+      console.log(`[FictionZone] Fetching chapter page ${currentPage}...`);
+      
       const response = await fetchApi(this.site + '/api/__api_party/api-v1', {
         method: 'POST',
         headers: {
@@ -153,6 +176,7 @@ class FictionZonePlugin implements Plugin.PagePlugin {
       const json = await response.json();
 
       if (!json._success || !json._data) {
+        console.log(`[FictionZone] API request failed for page ${currentPage}:`, json);
         throw new Error(`API request failed for page ${currentPage}`);
       }
 
@@ -161,21 +185,19 @@ class FictionZonePlugin implements Plugin.PagePlugin {
         releaseTime: new Date(c.created_at).toISOString(),
         path: `${novelPath}/${c.slug}`,
       }));
+      
+      console.log(`[FictionZone] Retrieved ${chapters.length} chapters from page ${currentPage}`);
       allChapters.push(...chapters);
 
       if (json._extra?._pagination) {
         lastPage = json._extra._pagination._last || 1;
+        console.log(`[FictionZone] Last page is: ${lastPage}`);
       }
       currentPage++;
     } while (currentPage <= lastPage);
 
+    console.log(`[FictionZone] Total chapters fetched: ${allChapters.length}`);
     return allChapters;
-  }
-
-  async parsePage(novelPath: string, page: string): Promise<Plugin.SourcePage> {
-    return {
-      chapters: [],
-    };
   }
 
   async parseChapter(chapterPath: string): Promise<string> {
