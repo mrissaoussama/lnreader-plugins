@@ -9,7 +9,7 @@ class FictionZonePlugin implements Plugin.PluginBase {
   name = 'Fiction Zone';
   icon = 'src/en/fictionzone/icon.png';
   site = 'https://fictionzone.net';
-  version = '1.0.4';
+  version = '1.0.5';
   // No filters currently (tag filters removed per request)
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
@@ -85,59 +85,106 @@ class FictionZonePlugin implements Plugin.PluginBase {
 
     const novel: Plugin.SourceNovel = {
       path: novelPath,
-      name: loadedCheerio('div.novel-title > h1').text(),
+      name: '', // Will be populated from JSON or HTML
     };
 
-    // novel.artist = '';
-    novel.author = loadedCheerio('div.novel-author > content').text();
-    novel.cover = loadedCheerio('div.novel-img > img').attr('src');
-    novel.genres = [
-      ...loadedCheerio('div.genres > .items > span')
-        .map((i, el) => loadedCheerio(el).text())
-        .toArray(),
-      ...loadedCheerio('div.tags > .items > a')
-        .map((i, el) => loadedCheerio(el).text())
-        .toArray(),
-    ].join(',');
-    console.log(`[FictionZone] Genres: ${novel.genres}`);
-    
-    const status = loadedCheerio('div.novel-status > div.content')
-      .text()
-      .trim();
-    if (status === 'Ongoing') novel.status = NovelStatus.Ongoing;
-    console.log(`[FictionZone] Status: ${status} -> ${novel.status}`);
-    
-    novel.summary = loadedCheerio('#synopsis > div.content').text() || 
-                    loadedCheerio('#synopsis').text() || 
-                    loadedCheerio('.synopsis').text() || 
-                    loadedCheerio('.novel-description').text() || 
-                    loadedCheerio('.description').text();
-    novel.summary = novel.summary?.trim();
-    console.log(`[FictionZone] Summary length: ${novel.summary?.length || 0} characters`);
-    console.log(`[FictionZone] Summary: ${novel.summary?.substring(0, 100)}${novel.summary && novel.summary.length > 100 ? '...' : ''}`);
-
-    let nuxtData = loadedCheerio('script#__NUXT_DATA__').html();
-    if (!nuxtData) {
-      throw new Error('Could not find __NUXT_DATA__');
-    }
-    let parsed = JSON.parse(nuxtData!);
     let novelId: string | null = null;
-    for (let a of parsed) {
-      if (typeof a === 'string' && a.startsWith('novel_covers/')) break;
-      if (typeof a === 'object' && a?.novel?.id) {
-        novelId = a.novel.id.toString();
-        break;
-      }
+    let foundNovelInNuxt = false;
+
+    const nuxtData = loadedCheerio('script#__NUXT_DATA__').html();
+    if (nuxtData) {
+        try {
+            const parsed = JSON.parse(nuxtData);
+            for (const item of parsed) {
+                if (item?.novel?.id) {
+                    const nuxtNovel = item.novel;
+                    novel.name = nuxtNovel.title;
+                    novel.author = nuxtNovel.author_name;
+                    
+                    if (nuxtNovel.image) {
+                        if (nuxtNovel.image.startsWith('http')) {
+                            novel.cover = nuxtNovel.image;
+                        } else if (nuxtNovel.image.includes('novel_covers/')) {
+                            const file = nuxtNovel.image.split('novel_covers/').pop();
+                            if (file) {
+                                novel.cover = `https://cdn.fictionzone.net/insecure/rs:force:160:240:0/q:90/plain/local:///novel_covers/${file}@webp`;
+                            }
+                        }
+                    }
+                    if (!novel.cover) {
+                        novel.cover = loadedCheerio('div.novel-img > img').attr('src');
+                    }
+
+                    novel.summary = nuxtNovel.overview;
+
+                    const genres = nuxtNovel.genres?.map((g: any) => g.name) || [];
+                    const tags = nuxtNovel.tags?.map((t: any) => t.name) || [];
+                    novel.genres = [...genres, ...tags].join(',');
+
+                    // Status mapping (1: Ongoing, 2: Completed, 3: Hiatus)
+                    if (nuxtNovel.status === 1) novel.status = NovelStatus.Ongoing;
+                    if (nuxtNovel.status === 2) novel.status = NovelStatus.Completed;
+                    if (nuxtNovel.status === 3) novel.status = NovelStatus.Hiatus;
+
+                    novelId = nuxtNovel.id.toString();
+                    this.cachedNovelIds.set(novelPath, novelId);
+                    foundNovelInNuxt = true;
+                    break;
+                }
+            }
+        } catch (e) {
+            // Fallback to scraping if JSON parsing fails
+        }
+    }
+
+    // Fallback to HTML scraping if NUXT data fails or is incomplete
+    if (!foundNovelInNuxt) {
+        novel.name = loadedCheerio('div.novel-title > h1').text();
+        novel.author = loadedCheerio('div.novel-author > content').text();
+        novel.cover = loadedCheerio('div.novel-img > img').attr('src');
+        novel.genres = [
+          ...loadedCheerio('div.genres > .items > span')
+            .map((i, el) => loadedCheerio(el).text())
+            .toArray(),
+          ...loadedCheerio('div.tags > .items > a')
+            .map((i, el) => loadedCheerio(el).text())
+            .toArray(),
+        ].join(',');
+        const status = loadedCheerio('div.novel-status > div.content')
+          .text()
+          .trim();
+        if (status === 'Ongoing') novel.status = NovelStatus.Ongoing;
+        if (status === 'Completed') novel.status = NovelStatus.Completed;
+        novel.summary = (loadedCheerio('#synopsis > div.content').text() || 
+                        loadedCheerio('#synopsis').text() || 
+                        loadedCheerio('.synopsis').text() || 
+                        loadedCheerio('.novel-description').text() || 
+                        loadedCheerio('.description').text())?.trim();
+        
+        if (!novelId && nuxtData) {
+            try {
+                const parsed = JSON.parse(nuxtData);
+                for (const item of parsed) {
+                    if (item?.novel?.id) {
+                        novelId = item.novel.id.toString();
+                        this.cachedNovelIds.set(novelPath, novelId);
+                        break;
+                    }
+                }
+            } catch (e) {
+                // ID extraction failed
+            }
+        }
     }
 
     if (!novelId) {
-      throw new Error('Could not find novel ID');
+      throw new Error('Could not find novel ID for chapter fetching.');
     }
-    this.cachedNovelIds.set(novelPath, novelId);
 
     try {
       novel.chapters = await this.fetchAllChapters(novelId, novelPath);
     } catch (apiError) {
+      // Fallback to scraping chapters from HTML
       novel.chapters = loadedCheerio(
         'div.chapters > div.list-wrapper > div.items > a.chapter',
       )
@@ -161,28 +208,19 @@ class FictionZonePlugin implements Plugin.PluginBase {
         })
         .toArray()
         .filter((chap) => {
-          return chap !== null && chap.name && chap.path && chap.releaseTime !== undefined;
+          return chap !== null && chap.name && chap.path;
         }) as Plugin.ChapterItem[];
-        
-      console.log(`[FictionZone] Scraped ${novel.chapters.length} chapters from HTML`);
     }
-    
-    console.log(`[FictionZone] ParseNovel completed successfully for: ${novelPath}`);
-    console.log(`[FictionZone] Final novel data - Name: ${novel.name}, Chapters: ${novel.chapters?.length || 0}, Author: ${novel.author}`);
     
     return novel;
   }
 
   async fetchAllChapters(novelId: string, novelPath: string): Promise<Plugin.ChapterItem[]> {
-    console.log(`[FictionZone] Starting fetchAllChapters for novel ID: ${novelId}`);
-    
     let allChapters: Plugin.ChapterItem[] = [];
     let currentPage = 1;
     let lastPage = 1;
 
     do {
-      console.log(`[FictionZone] Fetching chapter page ${currentPage}...`);
-      
       const response = await fetchApi(this.site + '/api/__api_party/api-v1', {
         method: 'POST',
         headers: {
@@ -198,7 +236,6 @@ class FictionZonePlugin implements Plugin.PluginBase {
       const json = await response.json();
 
       if (!json._success || !json._data) {
-        console.log(`[FictionZone] API request failed for page ${currentPage}:`, json);
         throw new Error(`API request failed for page ${currentPage}`);
       }
 
@@ -208,17 +245,14 @@ class FictionZonePlugin implements Plugin.PluginBase {
         path: `${novelPath}/${c.slug}`,
       }));
       
-      console.log(`[FictionZone] Retrieved ${chapters.length} chapters from page ${currentPage}`);
       allChapters.push(...chapters);
 
       if (json._extra?._pagination) {
         lastPage = json._extra._pagination._last || 1;
-        console.log(`[FictionZone] Last page is: ${lastPage}`);
       }
       currentPage++;
     } while (currentPage <= lastPage);
 
-    console.log(`[FictionZone] Total chapters fetched: ${allChapters.length}`);
     return allChapters;
   }
 
