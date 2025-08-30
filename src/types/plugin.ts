@@ -22,6 +22,8 @@ export namespace Plugin {
     name: string;
     path: string;
     cover?: string;
+    author?: string;
+    altNames?: string[];
   };
   export type SourceNovel = {
     /** Comma separated genre list -> "action,fantasy,romance" */
