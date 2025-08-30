@@ -6,7 +6,7 @@ import { Plugin } from '@typings/plugin';
 class NovelUpdates implements Plugin.PluginBase {
   id = 'novelupdates';
   name = 'Novel Updates';
-  version = '0.9.1';
+  version = '0.9.2';
   icon = 'src/en/novelupdates/icon.png';
   customCSS = 'src/en/novelupdates/customCSS.css';
   site = 'https://www.novelupdates.com/';
@@ -42,6 +42,24 @@ class NovelUpdates implements Plugin.PluginBase {
       filters?.sort.value === 'popular'
     ) {
       url += 'series-ranking/?rank=' + filters.sort.value;
+    } else if (filters?.sort.value === 'latest') {
+      url += 'latest-series/?st=1';
+      
+      if (filters?.genres.value.include?.length)
+        url += '&gi=' + filters.genres.value.include.join(',');
+      if (filters?.genres.value.exclude?.length)
+        url += '&ge=' + filters.genres.value.exclude.join(',');
+      if (
+        filters?.genres.value.include?.length ||
+        filters?.genres.value.exclude?.length
+      ) {
+        url += '&mgi=' + filters.genre_operator.value;
+      }
+      
+      if (filters?.language.value.length)
+        url += '&org=' + filters.language.value.join(',');
+        
+      url += '&pg=' + page;
     } else {
       url += 'series-finder/?sf=1';
       if (
@@ -59,18 +77,18 @@ class NovelUpdates implements Plugin.PluginBase {
       }
       url += '&sort=' + filters?.sort.value;
       url += '&order=' + filters?.order.value;
+      
+    
+      if (filters?.language.value.length)
+        url += '&org=' + filters.language.value.join(',');
+      if (filters?.genres.value.include?.length)
+        url += '&gi=' + filters.genres.value.include.join(',');
+      if (filters?.genres.value.exclude?.length)
+        url += '&ge=' + filters.genres.value.exclude.join(',');
+      if (filters?.storyStatus.value) url += '&ss=' + filters.storyStatus.value;
+
+      url += '&pg=' + page;
     }
-
-    // Add common filters
-    if (filters?.language.value.length)
-      url += '&org=' + filters.language.value.join(',');
-    if (filters?.genres.value.include?.length)
-      url += '&gi=' + filters.genres.value.include.join(',');
-    if (filters?.genres.value.exclude?.length)
-      url += '&ge=' + filters.genres.value.exclude.join(',');
-    if (filters?.storyStatus.value) url += '&ss=' + filters.storyStatus.value;
-
-    url += '&pg=' + page;
 
     const result = await fetchApi(url);
     const body = await result.text();
@@ -90,6 +108,22 @@ class NovelUpdates implements Plugin.PluginBase {
       cover: loadedCheerio('.wpb_wrapper img').attr('src'),
       chapters: [],
     };
+    
+    const altTitlesDiv = loadedCheerio('#editassociated');
+    if (altTitlesDiv.length) {
+      const altTitlesText = altTitlesDiv.html();
+      if (altTitlesText) {
+        const altTitles = altTitlesText
+          .split(/<br\s*\/?>/i)
+          .map(title => title.trim())
+          .filter(title => title.length > 0);
+        
+        if (altTitles.length > 0) {
+          novel.altNames = altTitles;
+        }
+      }
+    }
+    
     novel.author = loadedCheerio('#authtag')
       .map((_, el) => loadedCheerio(el).text().trim())
       .toArray()
@@ -927,6 +961,7 @@ class NovelUpdates implements Plugin.PluginBase {
       options: [
         { label: 'Popular (Month)', value: 'popmonth' },
         { label: 'Popular (All)', value: 'popular' },
+        { label: 'Latest Added', value: 'latest' },
         { label: 'Last Updated', value: 'sdate' },
         { label: 'Rating', value: 'srate' },
         { label: 'Rank', value: 'srank' },
