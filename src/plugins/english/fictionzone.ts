@@ -1,6 +1,5 @@
 import { fetchApi } from '@libs/fetch';
 import { Plugin } from '@typings/plugin';
-import { Filters } from '@libs/filterInputs';
 import { load as loadCheerio } from 'cheerio';
 import { NovelStatus } from '@libs/novelStatus';
 import dayjs from 'dayjs';
@@ -10,8 +9,8 @@ class FictionZonePlugin implements Plugin.PluginBase {
   name = 'Fiction Zone';
   icon = 'src/en/fictionzone/icon.png';
   site = 'https://fictionzone.net';
-  version = '1.0.2';
-  filters: Filters | undefined = undefined;
+  version = '1.0.4';
+  // No filters currently (tag filters removed per request)
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   //flag indicates whether access to LocalStorage, SesesionStorage is required.
@@ -21,11 +20,39 @@ class FictionZonePlugin implements Plugin.PluginBase {
 
   async popularNovels(
     pageNo: number,
-    {
-      showLatestNovels,
-      filters,
-    }: Plugin.PopularNovelsOptions<typeof this.filters>,
+    _options: Plugin.PopularNovelsOptions<any>,
   ): Promise<Plugin.NovelItem[]> {
+    // Use API newest sort. Fallback to HTML if API fails.
+    try {
+      const res = await fetchApi(this.site + '/api/__api_party/api-v1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: '/novel',
+          query: { page: pageNo, sort: 'newest' },
+          headers: { 'content-type': 'application/json' },
+          method: 'get',
+        }),
+      });
+      const json = await res.json();
+      if (json?._success && Array.isArray(json._data)) {
+        return json._data.map((n: any) => {
+          const slug: string = n?.slug;
+          const title: string = n?.title || slug?.replace(/[-_]/g, ' ');
+          const image: string | undefined = n?.image;
+          let cover: string | undefined = undefined;
+          if (image) {
+            if (image.startsWith('http')) cover = image;
+            else if (image.includes('novel_covers/')) {
+              const file = image.split('novel_covers/').pop();
+              if (file) cover = `https://cdn.fictionzone.net/insecure/rs:force:160:240:0/q:90/plain/local:///novel_covers/${file}@webp`;
+              if (!cover) cover = `${this.site}/${image.startsWith('novel_covers/') ? 'storage/' + image : image}`;
+            } else cover = `${this.site}/${image.replace(/^\//, '')}`;
+          }
+          return { name: title, path: `novel/${slug}`, cover, author: n?.author_name || undefined } as Plugin.NovelItem;
+        });
+      }
+    } catch {}
     return await this.getPage(this.site + '/library?page=' + pageNo);
   }
 
@@ -51,15 +78,14 @@ class FictionZonePlugin implements Plugin.PluginBase {
 
   async parseNovel(
     novelPath: string,
-  ): Promise<Plugin.SourceNovel & { totalPages: number }> {
+  ): Promise<Plugin.SourceNovel> {
     const req = await fetchApi(this.site + '/' + novelPath);
     const body = await req.text();
     const loadedCheerio = loadCheerio(body);
 
-    const novel: Plugin.SourceNovel & { totalPages: number } = {
+    const novel: Plugin.SourceNovel = {
       path: novelPath,
       name: loadedCheerio('div.novel-title > h1').text(),
-      totalPages: 1,
     };
 
     // novel.artist = '';
@@ -141,10 +167,6 @@ class FictionZonePlugin implements Plugin.PluginBase {
       console.log(`[FictionZone] Scraped ${novel.chapters.length} chapters from HTML`);
     }
     
-    const totalPagesText = loadedCheerio('div.chapters ul.el-pager > li:last-child').text();
-    novel.totalPages = totalPagesText ? parseInt(totalPagesText) : 1;
-    console.log(`[FictionZone] Total pages: ${novel.totalPages}`);
-
     console.log(`[FictionZone] ParseNovel completed successfully for: ${novelPath}`);
     console.log(`[FictionZone] Final novel data - Name: ${novel.name}, Chapters: ${novel.chapters?.length || 0}, Author: ${novel.author}`);
     
@@ -220,6 +242,39 @@ class FictionZonePlugin implements Plugin.PluginBase {
     searchTerm: string,
     pageNo: number,
   ): Promise<Plugin.NovelItem[]> {
+    const term = searchTerm.trim();
+    try {
+      const res = await fetchApi(this.site + '/api/__api_party/api-v1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: '/novel',
+          query: { query: term || undefined, page: pageNo, sort: 'newest' },
+          headers: { 'content-type': 'application/json' },
+          method: 'get',
+        }),
+      });
+      const json = await res.json();
+      if (json?._success && Array.isArray(json._data)) {
+        const items: Plugin.NovelItem[] = json._data.map((n: any) => {
+          const slug: string = n?.slug;
+          const title: string = n?.title || slug?.replace(/[-_]/g, ' ');
+            const image: string | undefined = n?.image;
+            let cover: string | undefined;
+            if (image) {
+              if (image.startsWith('http')) cover = image;
+              else if (image.includes('novel_covers/')) {
+                const file = image.split('novel_covers/').pop();
+                if (file) cover = `https://cdn.fictionzone.net/insecure/rs:force:160:240:0/q:90/plain/local:///novel_covers/${file}@webp`;
+                if (!cover) cover = `${this.site}/${image.startsWith('novel_covers/') ? 'storage/' + image : image}`;
+              } else cover = `${this.site}/${image.replace(/^\//, '')}`;
+            }
+          return { name: title, path: `novel/${slug}`, cover, author: n?.author_name || undefined } as Plugin.NovelItem;
+        });
+        if (items.length) return items;
+      }
+    } catch {}
+    // Fallback to HTML search
     return await this.getPage(
       this.site +
         '/library?query=' +
